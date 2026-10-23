@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Screenshot Editor
+Comment=Annotate screenshots
+Exec=gjs -m "@EDITOR_DIR@/main.js" %U
+Icon=applications-graphics
+Terminal=false
+NoDisplay=true
+StartupNotify=true
+Categories=Graphics;
+MimeType=image/png;

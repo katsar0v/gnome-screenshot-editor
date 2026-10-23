@@ -1,0 +1,31 @@
+.editor-canvas {
+    background-color: alpha(@window_fg_color, 0.07);
+}
+
+.tool-bar {
+    padding: 6px 12px;
+}
+
+.tool-bar button.swatch {
+    min-width: 26px;
+    min-height: 26px;
+    padding: 2px;
+}
+
+/* Inline text entry: transparent, so the text appears where it will be drawn. */
+entry.annot-entry,
+entry.annot-entry:focus-within {
+    background: none;
+    box-shadow: none;
+    border: none;
+    border-radius: 0;
+    padding: 0 1px;
+    min-height: 0;
+    outline: 1px dashed @accent_color;
+    outline-offset: 2px;
+}
+
+.crop-bar {
+    padding: 6px;
+    border-radius: 12px;
+}

@@ -1,0 +1,1 @@
+{"uuid": "test-driver@scratch", "name": "Test driver", "description": "E2E test driver (only installed into the throwaway test data dir)", "shell-version": ["46"], "version": 1}

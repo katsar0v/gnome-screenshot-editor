@@ -1,0 +1,10 @@
+{
+  "uuid": "screenshot-editor@katsarov.info",
+  "name": "Screenshot Editor",
+  "description": "Opens GNOME's screenshots in an annotation editor (arrows, shapes, text, blur, crop) right after they are taken with Print or the quick-settings button.",
+  "shell-version": [
+    "46"
+  ],
+  "version": 1,
+  "url": "https://github.com/katsar0v/gnome-screenshot-editor"
+}
