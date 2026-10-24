@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.screenshot-editor"
+          path="/org/gnome/shell/extensions/screenshot-editor/">
+    <key name="open-editor" type="b">
+      <default>true</default>
+      <summary>Open the editor after a screenshot</summary>
+      <description>Open screenshots taken with Print or the quick-settings screenshot button in the annotation editor.</description>
+    </key>
+    <key name="play-sound" type="b">
+      <default>true</default>
+      <summary>Play the shutter sound</summary>
+      <description>When off, GNOME's screenshot sound is muted for every screenshot, including Shift+Print and Alt+Print. Other system sounds are not affected.</description>
+    </key>
+    <key name="keep-screenshots" type="b">
+      <default>true</default>
+      <summary>Keep screenshot files</summary>
+      <description>When off, a screenshot opened in the editor is deleted from the Screenshots folder when the editor closes, unless it was saved. Save then writes over GNOME's file instead of creating a "-edited" copy.</description>
+    </key>
+    <key name="close-after-copy" type="b">
+      <default>false</default>
+      <summary>Close the editor after copying</summary>
+      <description>Copy (Ctrl+C) also closes the editor window.</description>
+    </key>
+  </schema>
+</schemalist>

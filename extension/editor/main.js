@@ -9,6 +9,7 @@ import GLib from 'gi://GLib';
 import Gtk from 'gi://Gtk?version=4.0';
 import System from 'system';
 
+import {openPreferences} from './shell.js';
 import {EditorWindow} from './window.js';
 
 const APP_ID = 'info.katsarov.ScreenshotEditor';
@@ -20,6 +21,12 @@ const app = new Adw.Application({
 });
 
 app.connect('startup', () => {
+    const prefs = new Gio.SimpleAction({name: 'preferences'});
+    prefs.connect('activate', () => {
+        openPreferences().catch(e => console.error(`Cannot open preferences: ${e.message}`));
+    });
+    app.add_action(prefs);
+
     const css = new Gtk.CssProvider();
     css.load_from_path(GLib.build_filenamev([EDITOR_DIR, 'style.css']));
     Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,

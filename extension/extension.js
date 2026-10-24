@@ -6,22 +6,29 @@
 // Shell's own screenshot UI (Print key, quick-settings button).
 //
 // Why this is safe for the shell:
-//  - Nothing is monkey-patched or overridden. The extension only connects to
-//    the public 'screenshot-taken' signal of Main.screenshotUI, which GNOME
-//    emits after the PNG has been written to disk and put on the clipboard.
+//  - GNOME's screenshot code is not patched. The extension connects to the
+//    public 'screenshot-taken' signal of Main.screenshotUI, which GNOME emits
+//    after the PNG has been written to disk and put on the clipboard.
+//  - The one override is optional: with the "play-sound" setting off,
+//    Meta.SoundPlayer.play_from_theme() skips the 'screen-capture' sound.
+//    InjectionManager restores the original on disable.
 //  - The editor is a separate process (a desktop-file launch, or a plain
 //    `gjs -m` subprocess as a fallback). No editor code runs inside the shell.
-//  - The only thing exported on D-Bus is Shell.CopyImage(ay), which validates
+//  - D-Bus exports two methods for the editor: CopyImage(ay), which validates
 //    its input and hands the PNG to St.Clipboard exactly as GNOME's own
-//    _storeScreenshot() does, so a copy outlives the editor window.
+//    _storeScreenshot() does, so a copy outlives the editor window; and
+//    ClaimScreenshot(s), which tells the editor whether a file is a screenshot
+//    this extension just handed to it (only those may be deleted on close
+//    when "keep-screenshots" is off).
 //  - Everything is undone in disable(): signal handler, pending timeout,
-//    D-Bus object and bus name.
+//    sound override, D-Bus object and bus name.
 
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import Meta from 'gi://Meta';
 import St from 'gi://St';
 
-import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
+import {Extension, InjectionManager} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 const DESKTOP_ID = 'info.katsarov.ScreenshotEditor.desktop';
@@ -36,17 +43,31 @@ const LAUNCH_DELAY_MS = 0;
 // after open(), so only SCREENSHOT means "the user pressed Print".
 const UI_MODE_SCREENSHOT = 0;
 
+// The sound GNOME plays in captureScreenshot() and the screenshot D-Bus API.
+const SHUTTER_SOUND = 'screen-capture';
+
+// Named explicitly rather than read from metadata.json, as in prefs.js.
+const SCHEMA_ID = 'org.gnome.shell.extensions.screenshot-editor';
+
 const SERVICE_NAME = 'info.katsarov.ScreenshotEditor.Shell';
 const OBJECT_PATH = '/info/katsarov/ScreenshotEditor/Shell';
 
 const MAX_PNG_BYTES = 64 * 1024 * 1024;
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
+// Screenshots handed to the editor but not claimed yet (e.g. it failed to
+// start) are forgotten after this many, oldest first.
+const MAX_PENDING_CLAIMS = 50;
+
 const SERVICE_XML = `
 <node>
   <interface name="${SERVICE_NAME}">
     <method name="CopyImage">
       <arg name="png" type="ay" direction="in"/>
+    </method>
+    <method name="ClaimScreenshot">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="handed_off" type="b" direction="out"/>
     </method>
   </interface>
 </node>
@@ -78,8 +99,9 @@ function pngToBytes(png) {
     return bytes;
 }
 
-class ClipboardService {
+class EditorService {
     constructor() {
+        this._handedOff = new Set();
         this._dbusObject = Gio.DBusExportedObject.wrapJSObject(SERVICE_XML, this);
         this._dbusObject.export(Gio.DBus.session, OBJECT_PATH);
         this._nameId = Gio.DBus.session.own_name(
@@ -97,6 +119,14 @@ class ClipboardService {
 
         this._dbusObject?.unexport();
         this._dbusObject = null;
+        this._handedOff.clear();
+    }
+
+    // Remembers a screenshot passed to the editor, for ClaimScreenshot().
+    handOff(path) {
+        this._handedOff.add(path);
+        if (this._handedOff.size > MAX_PENDING_CLAIMS)
+            this._handedOff.delete(this._handedOff.values().next().value);
     }
 
     // D-Bus method: CopyImage(in ay png). A thrown GLib.Error becomes the
@@ -105,10 +135,17 @@ class ClipboardService {
         const bytes = pngToBytes(png);
         St.Clipboard.get_default().set_content(St.ClipboardType.CLIPBOARD, 'image/png', bytes);
     }
+
+    // D-Bus method: ClaimScreenshot(in s path) -> b. True once per screenshot
+    // this extension opened in the editor; false for any other file.
+    ClaimScreenshot(path) {
+        return this._handedOff.delete(path);
+    }
 }
 
 export default class ScreenshotEditorExtension extends Extension {
     enable() {
+        this._settings = this.getSettings(SCHEMA_ID);
         this._pendingLaunches = new Set();
         this._warnedNoMode = false;
 
@@ -116,8 +153,17 @@ export default class ScreenshotEditorExtension extends Extension {
             'screenshot-taken', (_ui, file) => this._onScreenshotTaken(file),
             this);
 
+        const settings = this._settings;
+        this._injections = new InjectionManager();
+        this._injections.overrideMethod(Meta.SoundPlayer.prototype, 'play_from_theme',
+            original => function (name, ...args) {
+                if (name === SHUTTER_SOUND && !settings.get_boolean('play-sound'))
+                    return;
+                original.call(this, name, ...args);
+            });
+
         try {
-            this._service = new ClipboardService();
+            this._service = new EditorService();
         } catch (e) {
             // The editor still opens without D-Bus; Copy falls back to wl-copy.
             console.error('Screenshot Editor: could not export D-Bus service', e);
@@ -132,13 +178,17 @@ export default class ScreenshotEditorExtension extends Extension {
             GLib.Source.remove(id);
         this._pendingLaunches = null;
 
+        this._injections.clear();
+        this._injections = null;
+
         this._service?.destroy();
         this._service = null;
+        this._settings = null;
     }
 
     _onScreenshotTaken(file) {
         try {
-            if (!file)
+            if (!file || !this._settings.get_boolean('open-editor'))
                 return;
 
             const mode = Main.screenshotUI._currentMode;
@@ -181,6 +231,10 @@ export default class ScreenshotEditorExtension extends Extension {
         if (Main.overview.visible)
             Main.overview.hide();
 
+        const path = file.get_path();
+        if (path)
+            this._service?.handOff(path);
+
         const appInfo = Gio.DesktopAppInfo.new(DESKTOP_ID);
         if (appInfo) {
             // The launch context carries the Wayland activation token, so the
@@ -190,7 +244,6 @@ export default class ScreenshotEditorExtension extends Extension {
         }
 
         // Desktop file not installed: run the bundled editor directly.
-        const path = file.get_path();
         if (!path)
             throw new Error(`Screenshot is not a local file: ${file.get_uri()}`);
 

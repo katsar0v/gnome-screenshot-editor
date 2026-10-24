@@ -59,6 +59,28 @@ Shell discovers the extension, then:
 gnome-extensions enable screenshot-editor@katsarov.info
 ```
 
+## Settings
+
+Open them from the editor's menu (**Preferences**), the Extensions app, or
+`gnome-extensions prefs screenshot-editor@katsarov.info`.
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| Open the Editor | on | Turn the editor off without disabling the extension. |
+| Shutter Sound | on | Off mutes GNOME's screenshot sound for every screenshot, including Shift+Print and Alt+Print. Other system sounds are unaffected. |
+| Keep Screenshot Files | on | Off: the screenshot is deleted from the Screenshots folder (and from recent files) when you close the editor without saving. Save then writes over GNOME's file instead of creating `-edited.png`. The copied image stays on the clipboard. |
+| Close After Copying | off | Copy (Ctrl+C) also closes the editor. |
+
+"Keep Screenshot Files" only applies to screenshots the extension itself opened
+in the editor; an image you open by hand is never deleted. Shift+Print and
+Alt+Print never open the editor, so GNOME keeps those files as usual.
+
+From the command line:
+
+```sh
+gsettings --schemadir extension/schemas set org.gnome.shell.extensions.screenshot-editor play-sound false
+```
+
 ## Development
 
 Run the editor on its own (no shell needed):
@@ -103,8 +125,10 @@ tests/e2e/run.sh          # KEEP=1 keeps the temp dir with a screenshot per step
 
 It presses Print, captures, draws with every main tool, checks Copy (including
 after the editor closes), crop, Save, the close prompt, that Shift+Print,
-Alt+Print and a real portal screenshot do not open the editor, and that
-disabling the extension releases its D-Bus name.
+Alt+Print and a real portal screenshot do not open the editor, that disabling
+the extension releases its D-Bus name, and every setting. Services the test
+bus starts on demand (dconf, portals, the preferences window) also get the
+test display and folders.
 
 ## Editor features
 
@@ -163,6 +187,8 @@ on the lock screen.
 - **Copy does not survive closing the editor:** the shell service is not
   reachable, so the editor used `wl-copy` or the GTK clipboard. Check
   `gdbus introspect --session --dest info.katsarov.ScreenshotEditor.Shell --object-path /info/katsarov/ScreenshotEditor/Shell`.
+- **Settings have no effect / Preferences does not open:** run `./install.sh`
+  again (it compiles the settings schema), then log out and back in.
 - **After a GNOME upgrade:** add the new version to `shell-version` in
   `extension/metadata.json` and re-check the `screenshot-taken` signal and
   `_currentMode` in the new `screenshot.js`.

@@ -5,6 +5,8 @@ import {ev, sleep, run, SETUP} from './lib.js';
 
 // Set by run.sh: the throwaway directory holding this run's data, pictures and shots.
 const E2E = GLib.getenv('E2E_DIR');
+const ROOT = GLib.path_get_dirname(GLib.path_get_dirname(
+    GLib.path_get_dirname(GLib.filename_from_uri(import.meta.url)[0])));
 const SHOTS = `${E2E}/shots`;
 const PICS = `${E2E}/pictures/Screenshots`;
 const APP = 'info.katsarov.ScreenshotEditor';
@@ -232,6 +234,111 @@ run(async () => {
     check('from the overview: overview closed and editor focused', (await overviewHidden()) && win?.focus, win);
     await combo(['Control_L'], 'w');
     await waitFor(async () => (await editors()).length === 0, 3000);
+
+    // --- 9. Settings ------------------------------------------------------------
+    const setKey = async (k, v) => {
+        sh(['gsettings', '--schemadir', `${ROOT}/extension/schemas`, 'set',
+            'org.gnome.shell.extensions.screenshot-editor', k, String(v)]);
+        await sleep(800); // keyfile backend change notification
+    };
+    const sounds = () => ev(`return globalThis.soundLog.filter(n => n === 'screen-capture').length;`);
+    const resetSounds = () => ev('globalThis.soundLog.length = 0; return 1;');
+    const openEditor = async () => {
+        await printCapture();
+        const ok = await waitFor(async () => (await editors()).length === 1);
+        await sleep(1200);
+        return ok;
+    };
+    const focusEditor = () => ev(`global.get_window_actors().map(a => a.meta_window)
+        .filter(w => w.get_wm_class() === '${APP}').forEach(w => w.activate(global.get_current_time())); return 1;`);
+    const closeEditor = async () => {
+        await focusEditor();
+        await sleep(300);
+        await combo(['Control_L'], 'w');
+        return waitFor(async () => (await editors()).length === 0, 4000);
+    };
+    const uriOf = name => Gio.File.new_for_path(`${PICS}/${name}`).get_uri();
+    const recentFiles = () => {
+        try {
+            return new TextDecoder().decode(GLib.file_get_contents(`${E2E}/data/recently-used.xbel`)[1]);
+        } catch {
+            return '';
+        }
+    };
+    const sizeOf = path => Gio.File.new_for_path(path).query_info('standard::size', 0, null).get_size();
+
+    check('shutter sound plays by default', (await sounds()) > 0);
+    await setKey('play-sound', false);
+    await resetSounds();
+    check('sound off: editor still opens', await openEditor());
+    await closeEditor();
+    await combo(['Shift_L'], 'Print'); await sleep(1500);
+    check('sound off: no shutter sound for Print or Shift+Print', (await sounds()) === 0);
+    await setKey('play-sound', true);
+    await combo(['Shift_L'], 'Print'); await sleep(1500);
+    check('sound back on after re-enabling', (await sounds()) === 1);
+
+    await setKey('keep-screenshots', false);
+    before = pics();
+    check('keep off: editor opens', await openEditor());
+    let fresh = pics().filter(n => !before.includes(n));
+    check('keep off: the file exists while editing', fresh.length === 1, fresh);
+    check('keep off: GNOME listed it in recent files', recentFiles().includes(uriOf(fresh[0])));
+    await shot('11-keep-off');
+    check('keep off: closing without saving deletes it', (await closeEditor()) && !pics().includes(fresh[0]));
+    check('keep off: removed from recent files', !recentFiles().includes(uriOf(fresh[0])));
+
+    before = pics();
+    await openEditor();
+    fresh = pics().filter(n => !before.includes(n));
+    const rawSize = sizeOf(`${PICS}/${fresh[0]}`);
+    [win] = await editors();
+    await key('a'); await ev(`await T.drag(${win.x + 300}, ${win.y + 400}, ${win.x + 700}, ${win.y + 300}); return 1;`);
+    await combo(['Control_L'], 's'); await sleep(800);
+    await closeEditor();
+    const kept = pics().filter(n => !before.includes(n));
+    check('keep off + Save: written over GNOME\'s file, kept, no -edited copy',
+        kept.length === 1 && kept[0] === fresh[0] && sizeOf(`${PICS}/${kept[0]}`) !== rawSize, {kept, rawSize});
+
+    // A file opened by hand is never deleted, whatever the setting.
+    const manual = `${PICS}/opened-by-hand.png`;
+    Gio.File.new_for_path(`${PICS}/${kept[0]}`).copy(Gio.File.new_for_path(manual), Gio.FileCopyFlags.OVERWRITE, null, null);
+    Gio.Subprocess.new(['gjs', '-m', `${ROOT}/extension/editor/main.js`, manual],
+        Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE);
+    check('opened by hand: editor opens', await waitFor(async () => (await editors()).length === 1));
+    await sleep(1500);
+    check('opened by hand: closing keeps the file', (await closeEditor()) && GLib.file_test(manual, GLib.FileTest.EXISTS));
+    await setKey('keep-screenshots', true);
+
+    await setKey('open-editor', false);
+    before = pics();
+    await printCapture(); await sleep(2500);
+    check('open-editor off: no editor, GNOME still saves', (await editors()).length === 0 && pics().length === before.length + 1);
+    await setKey('open-editor', true);
+
+    await setKey('close-after-copy', true);
+    await openEditor();
+    await combo(['Control_L'], 'c');
+    check('close-after-copy: Copy closes the editor', await waitFor(async () => (await editors()).length === 0, 4000));
+    await setKey('close-after-copy', false);
+
+    await openEditor();
+    // Right after an update the shell still has the old metadata.json (no
+    // settings-schema) until the next login; preferences must open anyway.
+    await ev(`delete Main.extensionManager.lookup('screenshot-editor@katsarov.info').metadata['settings-schema']; return 1;`);
+    Gio.DBus.session.call_sync(APP, `/${APP.replaceAll('.', '/')}`, 'org.gtk.Actions', 'Activate',
+        new GLib.Variant('(sava{sv})', ['preferences', [], {}]), null, Gio.DBusCallFlags.NONE, -1, null);
+    const prefsWindow = async () => (await ev('return T.windows();'))
+        .find(w => w.wmclass !== APP && w.title === 'Screenshot Editor');
+    check('editor menu opens the preferences window', await waitFor(async () => !!(await prefsWindow()), 10000),
+        await ev('return T.windows();'));
+    await sleep(1500);
+    await shot('12-preferences');
+    await ev(`global.get_window_actors().map(a => a.meta_window)
+        .filter(w => w.get_wm_class() !== '${APP}' && w.get_title() === 'Screenshot Editor')
+        .forEach(w => w.delete(global.get_current_time())); return 1;`);
+    await sleep(800);
+    await closeEditor();
 
     const log = await ev(`return Main.extensionManager.lookup('screenshot-editor@katsarov.info')?.error ?? '';`);
     check('extension reports no error', !log, log);

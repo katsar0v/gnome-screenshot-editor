@@ -6,5 +6,6 @@
     "46"
   ],
   "version": 1,
-  "url": "https://github.com/katsar0v/gnome-screenshot-editor"
+  "url": "https://github.com/katsar0v/gnome-screenshot-editor",
+  "settings-schema": "org.gnome.shell.extensions.screenshot-editor"
 }

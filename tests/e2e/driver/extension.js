@@ -17,6 +17,12 @@ const AsyncFunction = (async () => {}).constructor;
 
 export default class Driver extends Extension {
     enable() {
+        // Record sounds instead of playing them. Enabled before the extension
+        // under test, so its play_from_theme override wraps this spy.
+        globalThis.soundLog = [];
+        this._playFromTheme = Meta.SoundPlayer.prototype.play_from_theme;
+        Meta.SoundPlayer.prototype.play_from_theme = name => globalThis.soundLog.push(name);
+
         const seat = Clutter.get_default_backend().get_default_seat();
         const ctx = {
             Main, Clutter, GdkPixbuf, Gio, GLib, Meta, Shell, St, global,
@@ -39,6 +45,7 @@ export default class Driver extends Extension {
     }
 
     disable() {
+        Meta.SoundPlayer.prototype.play_from_theme = this._playFromTheme;
         Gio.DBus.session.unown_name(this._id);
         this._obj.unexport();
     }

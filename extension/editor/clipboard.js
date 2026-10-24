@@ -9,17 +9,12 @@ import Gdk from 'gi://Gdk?version=4.0';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
-Gio._promisify(Gio.DBusConnection.prototype, 'call');
+import {callExtension} from './shell.js';
+
 Gio._promisify(Gio.Subprocess.prototype, 'communicate_async');
 
-const BUS_NAME = 'info.katsarov.ScreenshotEditor.Shell';
-const OBJECT_PATH = '/info/katsarov/ScreenshotEditor/Shell';
-const INTERFACE = 'info.katsarov.ScreenshotEditor.Shell';
-
 async function copyViaShell(bytes) {
-    await Gio.DBus.session.call(BUS_NAME, OBJECT_PATH, INTERFACE, 'CopyImage',
-        new GLib.Variant('(ay)', [bytes]), null,
-        Gio.DBusCallFlags.NO_AUTO_START, 10000, null);
+    await callExtension('CopyImage', new GLib.Variant('(ay)', [bytes]));
 }
 
 async function copyViaWlCopy(bytes) {
