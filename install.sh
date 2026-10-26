@@ -43,6 +43,9 @@ do_install() {
         *[\"\\\`\$%\&]*) die "editor path contains characters not allowed in an Exec= line: $editor_dir" ;;
     esac
 
+    glib-compile-schemas "$EXT_SRC/schemas" || die "could not compile the settings schema"
+    echo "Compiled $EXT_SRC/schemas/gschemas.compiled"
+
     mkdir -p "$(dirname "$EXT_LINK")" "$APPS_DIR"
 
     if [[ -L "$EXT_LINK" ]]; then
