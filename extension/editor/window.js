@@ -12,7 +12,7 @@ import {copyImage} from './clipboard.js';
 import {freeEditedPath, pngBytes, savePng} from './export.js';
 import {Document} from './history.js';
 import {getSetting} from './settings.js';
-import {claimScreenshot} from './shell.js';
+import {claimScreenshot, notifySaved} from './shell.js';
 import {TOOL_KEYS, ToolState, Toolbar} from './toolbar.js';
 
 const SHORTCUTS = [
@@ -59,6 +59,7 @@ export class EditorWindow {
         this.state = new ToolState();
         this._saveTarget = null;
         this._forceClose = false;
+        this._closed = false;
         this._closeDialog = null;
         // Set once the extension confirms it opened this screenshot; only then
         // may the file be deleted on close (see _isTemporary).
@@ -233,8 +234,16 @@ export class EditorWindow {
             this._savedOverOriginal = true;
         this.doc.markClean();
         this._syncTitle();
-        this._toast(`Saved as ${GLib.path_get_basename(path)}`, true);
+        this._announceSaved(path);
         return true;
+    }
+
+    // A shell notification, standing in for GNOME's "Screenshot captured" one
+    // that the extension withdrew; it outlives the window if Save closes it.
+    // Without the extension, a toast.
+    async _announceSaved(path) {
+        if (!await notifySaved(path) && !this._closed)
+            this._toast(`Saved as ${GLib.path_get_basename(path)}`, true);
     }
 
     // The first save picks a free "-edited" name, or writes over a temporary
@@ -282,6 +291,7 @@ export class EditorWindow {
     _onCloseRequest() {
         this.canvas.commitText();
         if (this._forceClose || !this.doc.dirty || !this.doc.hasEdits) {
+            this._closed = true;
             this._discardTemporary();
             this.canvas.dispose();
             this.doc.dispose();

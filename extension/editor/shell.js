@@ -31,6 +31,17 @@ export async function claimScreenshot(path) {
     }
 }
 
+// Asks the extension for a "Screenshot saved" notification. False if it is
+// not running.
+export async function notifySaved(path) {
+    try {
+        await callExtension('NotifySaved', new GLib.Variant('(s)', [path]));
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 export async function openPreferences() {
     await Gio.DBus.session.call('org.gnome.Shell.Extensions', '/org/gnome/Shell/Extensions',
         'org.gnome.Shell.Extensions', 'OpenExtensionPrefs',

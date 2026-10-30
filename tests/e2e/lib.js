@@ -38,7 +38,15 @@ globalThis.T = {
     if (!bytes || bytes.get_size() === 0) { res(null); return; }
     const pb = GdkPixbuf.Pixbuf.new_from_stream(Gio.MemoryInputStream.new_from_bytes(bytes), null);
     res({size: bytes.get_size(), w: pb.get_width(), h: pb.get_height()}); })); },
+  // Every notification added to the tray; ms is how long it lived (null while it does).
+  notes: [],
 };
+Main.messageTray.connect('source-added', (_tray, source) => source.connect('notification-added', (_s, n) => {
+  const added = now();
+  const note = {title: n.title, body: n.body, thumbnail: n.gicon instanceof St.ImageContent, ms: null};
+  T.notes.push(note);
+  n.connect('destroy', () => { note.ms = (now() - added) / 1000; });
+}));
 return 'ok';
 `;
 
