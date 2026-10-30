@@ -64,6 +64,13 @@ async function printCapture(mode = null) {
 
 const overviewHidden = async () => !(await ev('return Main.overview.visible;'));
 
+const notes = () => ev('return T.notes;');
+const resetNotes = () => ev('T.notes.length = 0; return 1;');
+// GNOME's notification titles are translated, the editor's are not.
+const savedNote = async name => (await notes()).find(n => n.title === 'Screenshot saved' && n.body === name);
+// Withdrawn in the same main loop iteration, before its banner is drawn.
+const withdrawn = n => n.ms !== null && n.ms < 100;
+
 run(async () => {
     await ev(SETUP);
     // A fresh shell starts in the overview; begin from the plain desktop.
@@ -73,10 +80,14 @@ run(async () => {
 
     // --- 1. Print opens the editor --------------------------------------------
     let before = pics();
+    await resetNotes();
     check('Print opens the screenshot UI', await printCapture());
     check('editor window appears after capture', await waitFor(async () => (await editors()).length === 1));
     let added = pics().filter(n => !before.includes(n));
     check('GNOME saved the screenshot', added.length === 1, added);
+    let captureNotes = await notes();
+    check('GNOME\'s screenshot notification is withdrawn before it shows',
+        captureNotes.length === 1 && withdrawn(captureNotes[0]), captureNotes);
     const shotName = added[0];
     await sleep(1200);
     let [win] = await editors();
@@ -138,10 +149,14 @@ run(async () => {
     check('cropped copy is smaller than the screenshot', clip && clip.w < shotDims[0] && clip.h < shotDims[1], clip);
 
     before = pics();
+    await resetNotes();
     await combo(['Control_L'], 's'); await sleep(1000);
     added = pics().filter(n => !before.includes(n));
     const edited = shotName.replace(/\.png$/, '-edited.png');
     check('Ctrl+S writes <name>-edited.png', added.length === 1 && added[0] === edited, added);
+    check('Save shows a "Screenshot saved" notification with a thumbnail',
+        await waitFor(async () => (await savedNote(edited))?.thumbnail, 4000), await notes());
+    await shot('07b-saved-notification');
     const editedDims = added.length ? dims(`${PICS}/${added[0]}`) : null;
     check('saved file has the cropped size', editedDims && editedDims[0] === clip.w && editedDims[1] === clip.h, {editedDims, clip});
     before = pics();
@@ -156,8 +171,10 @@ run(async () => {
     check('copied image survives closing the editor', clipAfter && clipAfter.w === clip.w && clipAfter.h === clip.h, clipAfter);
 
     // --- 6. Close confirmation ---------------------------------------------------
+    before = pics();
     await printCapture();
     check('second Print opens a new editor', await waitFor(async () => (await editors()).length === 1));
+    const secondShot = pics().filter(n => !before.includes(n))[0];
     await sleep(1200);
     [win] = await editors();
     check('second editor focused', win?.focus);
@@ -171,11 +188,15 @@ run(async () => {
     await combo(['Control_L'], 'w'); await sleep(600); // must not stack a second dialog
     await shot('09-close-confirm-again');
     // Return picks the default response (Save), which saves and closes.
+    await resetNotes();
     await key('Return'); await sleep(1000);
     const closed = await waitFor(async () => (await editors()).length === 0, 4000);
     check('dialog response closes the window', closed);
     if (!closed)
         await shot('10-dialog-stuck');
+    check('saving from the dialog still notifies after the window closes',
+        await waitFor(async () => !!(await savedNote(secondShot?.replace(/\.png$/, '-edited.png'))), 4000),
+        await notes());
 
     // --- 7. Paths that must NOT open the editor ---------------------------------
     for (const [label, action] of [
@@ -184,10 +205,14 @@ run(async () => {
         ['Alt+Print (window)', () => combo(['Alt_L'], 'Print')],
     ]) {
         before = pics();
+        await resetNotes();
         await action();
         await sleep(2500);
         const n = pics().filter(x => !before.includes(x)).length;
         check(`${label}: no editor`, (await editors()).length === 0, {newFiles: n});
+        // One notification per new file, none withdrawn.
+        const shown = await notes();
+        check(`${label}: GNOME's notification is kept`, shown.length === n && !shown.some(withdrawn), shown);
     }
 
     // Real portal call: xdg-desktop-portal → InteractiveScreenshot (mode 2).
@@ -312,8 +337,11 @@ run(async () => {
 
     await setKey('open-editor', false);
     before = pics();
+    await resetNotes();
     await printCapture(); await sleep(2500);
     check('open-editor off: no editor, GNOME still saves', (await editors()).length === 0 && pics().length === before.length + 1);
+    const offNotes = await notes();
+    check('open-editor off: GNOME\'s notification is kept', offNotes.length === 1 && !withdrawn(offNotes[0]), offNotes);
     await setKey('open-editor', true);
 
     await setKey('close-after-copy', true);

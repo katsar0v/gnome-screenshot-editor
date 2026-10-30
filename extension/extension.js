@@ -14,15 +14,22 @@
 //    InjectionManager restores the original on disable.
 //  - The editor is a separate process (a desktop-file launch, or a plain
 //    `gjs -m` subprocess as a fallback). No editor code runs inside the shell.
-//  - D-Bus exports two methods for the editor: CopyImage(ay), which validates
-//    its input and hands the PNG to St.Clipboard exactly as GNOME's own
-//    _storeScreenshot() does, so a copy outlives the editor window; and
+//  - For a screenshot that opens in the editor, GNOME's "Screenshot captured"
+//    notification is withdrawn before its banner shows: it would cover the
+//    editor's Copy and Save buttons. The editor asks for a "Screenshot saved"
+//    notification instead when it saves.
+//  - D-Bus exports three methods for the editor: CopyImage(ay), which
+//    validates its input and hands the PNG to St.Clipboard exactly as GNOME's
+//    own _storeScreenshot() does, so a copy outlives the editor window;
 //    ClaimScreenshot(s), which tells the editor whether a file is a screenshot
 //    this extension just handed to it (only those may be deleted on close
-//    when "keep-screenshots" is off).
+//    when "keep-screenshots" is off); and NotifySaved(s), which shows the
+//    saved notification.
 //  - Everything is undone in disable(): signal handler, pending timeout,
-//    sound override, D-Bus object and bus name.
+//    sound override, pending thumbnail loads, D-Bus object and bus name.
 
+import Cogl from 'gi://Cogl';
+import GdkPixbuf from 'gi://GdkPixbuf';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
@@ -30,6 +37,10 @@ import St from 'gi://St';
 
 import {Extension, InjectionManager} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js';
+
+Gio._promisify(Gio.File.prototype, 'read_async');
+Gio._promisify(GdkPixbuf.Pixbuf, 'new_from_stream_at_scale_async', 'new_from_stream_finish');
 
 const DESKTOP_ID = 'info.katsarov.ScreenshotEditor.desktop';
 
@@ -45,6 +56,13 @@ const UI_MODE_SCREENSHOT = 0;
 
 // The sound GNOME plays in captureScreenshot() and the screenshot D-Bus API.
 const SHUTTER_SOUND = 'screen-capture';
+
+// Source icon of GNOME's screenshot notification (screenshot.js), also used
+// for the saved notification.
+const SCREENSHOT_ICON = 'screenshot-recorded-symbolic';
+
+// Longest side of the saved notification's thumbnail, in pixels.
+const THUMBNAIL_SIZE = 256;
 
 // Named explicitly rather than read from metadata.json, as in prefs.js.
 const SCHEMA_ID = 'org.gnome.shell.extensions.screenshot-editor';
@@ -68,6 +86,9 @@ const SERVICE_XML = `
     <method name="ClaimScreenshot">
       <arg name="path" type="s" direction="in"/>
       <arg name="handed_off" type="b" direction="out"/>
+    </method>
+    <method name="NotifySaved">
+      <arg name="path" type="s" direction="in"/>
     </method>
   </interface>
 </node>
@@ -99,9 +120,86 @@ function pngToBytes(png) {
     return bytes;
 }
 
+// Withdraws GNOME's "Screenshot captured" notification. _storeScreenshot()
+// adds a new source for it right before 'screenshot-taken' is emitted, so it
+// is the newest source with the screenshot icon. (Source.iconName reads a
+// property Source does not have, hence icon.get_names().)
+function dismissCapturedNotification() {
+    try {
+        const source = Main.messageTray.getSources().findLast(s =>
+            s.icon instanceof Gio.ThemedIcon && s.icon.get_names().includes(SCREENSHOT_ICON));
+        source?.notifications.at(-1)?.destroy();
+    } catch (e) {
+        console.error('Screenshot Editor: could not dismiss the screenshot notification', e);
+    }
+}
+
+// The image scaled down, as the St.ImageContent GNOME's own notification
+// uses (it keeps the aspect ratio). GdkPixbuf decodes it in a thread.
+async function loadThumbnail(file, cancellable) {
+    const stream = await file.read_async(GLib.PRIORITY_DEFAULT, cancellable);
+    let pixbuf;
+    try {
+        pixbuf = await GdkPixbuf.Pixbuf.new_from_stream_at_scale_async(
+            stream, THUMBNAIL_SIZE, THUMBNAIL_SIZE, true, cancellable);
+    } finally {
+        stream.close(null);
+    }
+    if (!pixbuf.has_alpha)
+        pixbuf = pixbuf.add_alpha(false, 0, 0, 0);
+
+    const content = St.ImageContent.new_with_preferred_size(pixbuf.width, pixbuf.height);
+    content.set_bytes(pixbuf.read_pixel_bytes(), Cogl.PixelFormat.RGBA_8888,
+        pixbuf.width, pixbuf.height, pixbuf.rowstride);
+    return content;
+}
+
+function launchSafely(what, launch) {
+    try {
+        launch(global.create_app_launch_context(0, -1));
+    } catch (e) {
+        console.error(`Screenshot Editor: could not ${what}`, e);
+    }
+}
+
+// Like GNOME's "Screenshot captured" notification, for an image the editor
+// saved: clicking it opens the image, "Show in Files" its folder.
+async function showSavedNotification(file, cancellable) {
+    let thumbnail = null;
+    try {
+        thumbnail = await loadThumbnail(file, cancellable);
+    } catch (e) {
+        if (!cancellable.is_cancelled())
+            console.warn(`Screenshot Editor: no thumbnail for ${file.get_path()}: ${e.message}`);
+    }
+    if (cancellable.is_cancelled())
+        return;
+
+    const source = new MessageTray.Source({title: 'Screenshot', iconName: SCREENSHOT_ICON});
+    const notification = new MessageTray.Notification({
+        source,
+        title: 'Screenshot saved',
+        body: file.get_basename(),
+        gicon: thumbnail,
+        isTransient: true,
+    });
+    notification.addAction('Show in Files', () => launchSafely('show the image in Files', ctx => {
+        const app = Gio.app_info_get_default_for_type('inode/directory', false);
+        if (!app)
+            throw new Error('no default app for inode/directory');
+        app.launch([file], ctx);
+    }));
+    notification.connect('activated', () => launchSafely('open the image',
+        ctx => Gio.app_info_launch_default_for_uri(file.get_uri(), ctx)));
+
+    Main.messageTray.add(source);
+    source.addNotification(notification);
+}
+
 class EditorService {
     constructor() {
         this._handedOff = new Set();
+        this._cancellable = new Gio.Cancellable();
         this._dbusObject = Gio.DBusExportedObject.wrapJSObject(SERVICE_XML, this);
         this._dbusObject.export(Gio.DBus.session, OBJECT_PATH);
         this._nameId = Gio.DBus.session.own_name(
@@ -120,6 +218,7 @@ class EditorService {
         this._dbusObject?.unexport();
         this._dbusObject = null;
         this._handedOff.clear();
+        this._cancellable.cancel();
     }
 
     // Remembers a screenshot passed to the editor, for ClaimScreenshot().
@@ -140,6 +239,15 @@ class EditorService {
     // this extension opened in the editor; false for any other file.
     ClaimScreenshot(path) {
         return this._handedOff.delete(path);
+    }
+
+    // D-Bus method: NotifySaved(in s path). The editor calls it after writing
+    // an image, since the "Screenshot captured" notification was withdrawn.
+    NotifySaved(path) {
+        if (!GLib.path_is_absolute(path))
+            throw invalidArgs(`NotifySaved expects an absolute path, got "${path}"`);
+        showSavedNotification(Gio.File.new_for_path(path), this._cancellable).catch(e =>
+            console.error('Screenshot Editor: could not show the saved notification', e));
     }
 }
 
@@ -201,6 +309,9 @@ export default class ScreenshotEditorExtension extends Extension {
             } else if (mode !== UI_MODE_SCREENSHOT) {
                 return;
             }
+
+            // Its banner would cover the editor's Copy and Save buttons.
+            dismissCapturedNotification();
 
             if (LAUNCH_DELAY_MS > 0) {
                 const id = GLib.timeout_add(GLib.PRIORITY_DEFAULT, LAUNCH_DELAY_MS, () => {

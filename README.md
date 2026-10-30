@@ -19,9 +19,16 @@ exactly as they are.
 
 A small GNOME Shell extension listens to the `screenshot-taken` signal of
 `Main.screenshotUI`. GNOME emits it after the PNG is saved to
-`~/Pictures/Screenshots` and copied to the clipboard. Nothing is
-monkey-patched; the extension only launches the editor (a separate GTK4 /
+`~/Pictures/Screenshots` and copied to the clipboard. GNOME's screenshot code
+is not patched; the extension launches the editor (a separate GTK4 /
 libadwaita process in `extension/editor/`) on the saved file.
+
+GNOME also shows a "Screenshot captured" notification, whose banner would
+cover the editor's Copy and Save buttons. For screenshots that open in the
+editor, the extension withdraws it in its `screenshot-taken` handler, a few
+milliseconds after GNOME adds it and before the banner slides in. Saving from the editor shows a "Screenshot saved"
+notification instead, with a thumbnail and Show in Files. Screenshots that do
+not open the editor keep GNOME's notification.
 
 | Screenshot method | Opens the editor |
 | --- | --- |
@@ -32,12 +39,18 @@ libadwaita process in `extension/editor/`) on the saved file.
 The portal reuses the same UI, so the extension checks the private
 `screenshotUI._currentMode` and only reacts to the plain screenshot mode.
 
-The extension also exports one D-Bus method, used by the editor for Copy:
-`info.katsarov.ScreenshotEditor.Shell` on `/info/katsarov/ScreenshotEditor/Shell`,
-`CopyImage(ay png)`. It validates the PNG signature and a 64 MiB size limit,
-then puts the image on the clipboard through `St.Clipboard`, like GNOME's own
-screenshot code does. Because the shell owns the clipboard content, the copy
-survives closing the editor.
+The extension also exports a D-Bus service for the editor,
+`info.katsarov.ScreenshotEditor.Shell` on `/info/katsarov/ScreenshotEditor/Shell`:
+
+- `CopyImage(ay png)`, for Copy. It validates the PNG signature and a 64 MiB
+  size limit, then puts the image on the clipboard through `St.Clipboard`,
+  like GNOME's own screenshot code does. Because the shell owns the clipboard
+  content, the copy survives closing the editor.
+- `ClaimScreenshot(s path) → b`: whether the extension just opened this file
+  in the editor (see Keep Screenshot Files below).
+- `NotifySaved(s path)`, for Save: shows the "Screenshot saved" notification.
+  It is a shell notification, so it stays when Save also closes the editor.
+  Without the extension, the editor shows an in-window message instead.
 
 ## Install and uninstall
 
@@ -124,8 +137,10 @@ tests/e2e/run.sh          # KEEP=1 keeps the temp dir with a screenshot per step
 ```
 
 It presses Print, captures, draws with every main tool, checks Copy (including
-after the editor closes), crop, Save, the close prompt, that Shift+Print,
-Alt+Print and a real portal screenshot do not open the editor, that disabling
+after the editor closes), crop, Save, the close prompt, that GNOME's
+notification is withdrawn only for screenshots that open the editor and Save
+shows its own, that Shift+Print, Alt+Print and a real portal screenshot do not
+open the editor, that disabling
 the extension releases its D-Bus name, and every setting. Services the test
 bus starts on demand (dconf, portals, the preferences window) also get the
 test display and folders.
@@ -152,7 +167,8 @@ test display and folders.
   then the GTK clipboard.
 - Save `Ctrl+S` writes `<name>-edited.png` next to the original. The first
   save picks a free name (`-edited`, `-edited-1`, ...); later saves from the
-  same window overwrite that file. Save As is `Ctrl+Shift+S`.
+  same window overwrite that file. Save As is `Ctrl+Shift+S`. Each save shows
+  a "Screenshot saved" notification; click it to open the image.
 - Close `Ctrl+W`, with a prompt if there are unsaved annotations.
 
 GNOME has already put the unedited screenshot on the clipboard when the editor
