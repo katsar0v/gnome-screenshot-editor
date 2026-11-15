@@ -368,6 +368,15 @@ run(async () => {
     await sleep(800);
     await closeEditor();
 
+    // NotifySaved only shows a notification for PNG files.
+    await resetNotes();
+    const notPng = `${E2E}/not-a-png.txt`;
+    GLib.file_set_contents(notPng, 'hello');
+    Gio.DBus.session.call_sync(`${APP}.Shell`, `/${APP.replaceAll('.', '/')}/Shell`, `${APP}.Shell`,
+        'NotifySaved', new GLib.Variant('(s)', [notPng]), null, Gio.DBusCallFlags.NONE, -1, null);
+    await sleep(1500);
+    check('NotifySaved ignores a non-PNG file', (await notes()).length === 0, await notes());
+
     const log = await ev(`return Main.extensionManager.lookup('screenshot-editor@katsarov.info')?.error ?? '';`);
     check('extension reports no error', !log, log);
     print(`\n${failures} failure(s)`);

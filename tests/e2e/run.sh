@@ -49,7 +49,7 @@ cleanup() {
 }
 
 "$ROOT/install.sh" > "$E2E_DIR/install.log" 2>&1 || { cat "$E2E_DIR/install.log"; exit 1; }
-gnome-shell --headless --wayland --no-x11 --sm-disable --virtual-monitor 1600x1000 \
+gnome-shell --headless --no-x11 --virtual-monitor 1600x1000 \
     --wayland-display "$WAYLAND_DISPLAY" > "$E2E_DIR/shell.log" 2>&1 &
 SHELL_PID=$!
 trap cleanup EXIT
