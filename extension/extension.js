@@ -32,6 +32,7 @@ import Cogl from 'gi://Cogl';
 import GdkPixbuf from 'gi://GdkPixbuf';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import GioUnix from 'gi://GioUnix';
 import Meta from 'gi://Meta';
 import St from 'gi://St';
 
@@ -40,6 +41,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js';
 
 Gio._promisify(Gio.File.prototype, 'read_async');
+Gio._promisify(Gio.InputStream.prototype, 'read_bytes_async');
 Gio._promisify(GdkPixbuf.Pixbuf, 'new_from_stream_at_scale_async', 'new_from_stream_finish');
 
 const DESKTOP_ID = 'info.katsarov.ScreenshotEditor.desktop';
@@ -60,6 +62,10 @@ const SHUTTER_SOUND = 'screen-capture';
 // Source icon of GNOME's screenshot notification (screenshot.js), also used
 // for the saved notification.
 const SCREENSHOT_ICON = 'screenshot-recorded-symbolic';
+// Icon names of the source GNOME's "Screenshot captured" notification is added
+// to: GNOME 46 makes a source per screenshot with SCREENSHOT_ICON; GNOME 50
+// reuses one "Screen Capture" source with 'screenshooter-symbolic'.
+const CAPTURE_SOURCE_ICONS = [SCREENSHOT_ICON, 'screenshooter-symbolic'];
 
 // Longest side of the saved notification's thumbnail, in pixels.
 const THUMBNAIL_SIZE = 256;
@@ -127,7 +133,8 @@ function pngToBytes(png) {
 function dismissCapturedNotification() {
     try {
         const source = Main.messageTray.getSources().findLast(s =>
-            s.icon instanceof Gio.ThemedIcon && s.icon.get_names().includes(SCREENSHOT_ICON));
+            s.icon instanceof Gio.ThemedIcon &&
+            s.icon.get_names().some(name => CAPTURE_SOURCE_ICONS.includes(name)));
         source?.notifications.at(-1)?.destroy();
     } catch (e) {
         console.error('Screenshot Editor: could not dismiss the screenshot notification', e);
@@ -149,8 +156,18 @@ async function loadThumbnail(file, cancellable) {
         pixbuf = pixbuf.add_alpha(false, 0, 0, 0);
 
     const content = St.ImageContent.new_with_preferred_size(pixbuf.width, pixbuf.height);
-    content.set_bytes(pixbuf.read_pixel_bytes(), Cogl.PixelFormat.RGBA_8888,
-        pixbuf.width, pixbuf.height, pixbuf.rowstride);
+    const args = [pixbuf.read_pixel_bytes(), Cogl.PixelFormat.RGBA_8888,
+        pixbuf.width, pixbuf.height, pixbuf.rowstride];
+    // GNOME 50 takes the Cogl context first (as its own screenshot.js does);
+    // GNOME 46 has no such argument.
+    const coglContext = global.stage.context?.get_backend?.()?.get_cogl_context?.();
+    try {
+        content.set_bytes(...(coglContext ? [coglContext, ...args] : args));
+    } catch (e) {
+        if (!coglContext || !(e instanceof TypeError))
+            throw e;
+        content.set_bytes(...args);
+    }
     return content;
 }
 
@@ -159,6 +176,23 @@ function launchSafely(what, launch) {
         launch(global.create_app_launch_context(0, -1));
     } catch (e) {
         console.error(`Screenshot Editor: could not ${what}`, e);
+    }
+}
+
+// Whether the file starts with the PNG signature. Read asynchronously: this
+// runs inside the shell.
+async function isPngFile(file, cancellable) {
+    try {
+        const stream = await file.read_async(GLib.PRIORITY_DEFAULT, cancellable);
+        try {
+            const head = (await stream.read_bytes_async(PNG_SIGNATURE.length,
+                GLib.PRIORITY_DEFAULT, cancellable)).toArray();
+            return head.length === PNG_SIGNATURE.length && PNG_SIGNATURE.every((b, k) => head[k] === b);
+        } finally {
+            stream.close(null);
+        }
+    } catch {
+        return false;
     }
 }
 
@@ -246,7 +280,17 @@ class EditorService {
     NotifySaved(path) {
         if (!GLib.path_is_absolute(path))
             throw invalidArgs(`NotifySaved expects an absolute path, got "${path}"`);
-        showSavedNotification(Gio.File.new_for_path(path), this._cancellable).catch(e =>
+        // The editor only writes PNG files. Anything else is ignored, so no other
+        // program on the session bus can make the shell decode arbitrary files
+        // or show a notification that opens them.
+        const file = Gio.File.new_for_path(path);
+        isPngFile(file, this._cancellable).then(isPng => {
+            if (!isPng) {
+                console.warn(`Screenshot Editor: NotifySaved ignored non-PNG ${path}`);
+                return null;
+            }
+            return showSavedNotification(file, this._cancellable);
+        }).catch(e =>
             console.error('Screenshot Editor: could not show the saved notification', e));
     }
 }
@@ -346,7 +390,7 @@ export default class ScreenshotEditorExtension extends Extension {
         if (path)
             this._service?.handOff(path);
 
-        const appInfo = Gio.DesktopAppInfo.new(DESKTOP_ID);
+        const appInfo = GioUnix.DesktopAppInfo.new(DESKTOP_ID);
         if (appInfo) {
             // The launch context carries the Wayland activation token, so the
             // editor window is focused instead of just raising a notification.

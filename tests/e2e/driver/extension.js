@@ -29,6 +29,11 @@ export default class Driver extends Extension {
             kbd: seat.create_virtual_device(Clutter.InputDeviceType.KEYBOARD_DEVICE),
             ptr: seat.create_virtual_device(Clutter.InputDeviceType.POINTER_DEVICE),
         };
+        // GNOME 50 drops the x of a new virtual pointer's first motion, so the
+        // first test move would land at x=0 and could trigger the hot corner.
+        // Spend that first motion here, away from any corner.
+        ctx.ptr.notify_absolute_motion(GLib.get_monotonic_time(), 400, 400);
+        ctx.ptr.notify_absolute_motion(GLib.get_monotonic_time(), 400, 400);
         this._obj = Gio.DBusExportedObject.wrapJSObject(XML, {
             async EvalAsync([code], invocation) {
                 try {

@@ -10,7 +10,7 @@ exactly as they are.
 
 ## Requirements
 
-- GNOME Shell 46 on Wayland (tested on Ubuntu 24.04)
+- GNOME Shell 46 or 50 on Wayland (tested on Ubuntu 24.04 and 26.04)
 - `gjs`, GTK 4 and libadwaita 1.5 GObject introspection data. On Ubuntu:
   `sudo apt install gjs gir1.2-gtk-4.0 gir1.2-adw-1`
 - Optional: `wl-clipboard`, used for Copy if the extension is not running
